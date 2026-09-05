@@ -1,6 +1,5 @@
 streamlit
-yfinance>=0.2.38
-curl_cffi
+alpha_vantage
 pandas
 numpy
 plotly
