@@ -22,9 +22,9 @@ st.markdown("Real-time technical analysis, interactive charting, and automated s
 st.sidebar.header("Configuration Panel")
 
 ticker_options = {
+    "Reliance Industries": "RELIANCE.NS",
     "Nifty 50 Index": "^NSEI",
     "Bank Nifty Index": "^NSEBANK",
-    "Reliance Industries": "RELIANCE.NS",
     "Tata Consultancy Services": "TCS.NS",
     "HDFC Bank": "HDFCBANK.NS",
     "Infosys": "INFY.NS",
@@ -45,6 +45,26 @@ st.sidebar.markdown("---")
 st.sidebar.info("Data fetched dynamically via Yahoo Finance (`yfinance`). Ensure Yahoo ticker suffixes are included (`.NS` for NSE).")
 
 # -----------------------------------------------------------------------------
+# ROBUST DATA FETCHING FUNCTION
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=300)
+def fetch_stock_data(ticker):
+    """Fetches data using yf.download with fallback to yf.Ticker().history()"""
+    # Attempt 1: yf.download
+    data = yf.download(ticker, period="6m", interval="1d", progress=False, auto_adjust=True)
+    
+    # Flatten MultiIndex columns if present
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
+
+    # Attempt 2: Fallback to Ticker.history if download returned empty
+    if data.empty:
+        t = yf.Ticker(ticker)
+        data = t.history(period="6m", interval="1d")
+
+    return data
+
+# -----------------------------------------------------------------------------
 # TECHNICAL INDICATORS CALCULATIONS
 # -----------------------------------------------------------------------------
 def calculate_indicators(df):
@@ -52,7 +72,7 @@ def calculate_indicators(df):
     # 1. Exponential Moving Average (20-period)
     df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
 
-    # 2. Approximate Daily VWAP (Typical Price * Volume / Cumulative Volume)
+    # 2. Approximate Daily VWAP
     typical_price = (df['High'] + df['Low'] + df['Close']) / 3
     df['VWAP'] = (typical_price * df['Volume']).cumsum() / df['Volume'].cumsum()
 
@@ -64,10 +84,7 @@ def calculate_indicators(df):
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
 
-    # 4. Generate Signal Logic
-    # BUY: RSI < 30 and Price > 20 EMA
-    # SELL: RSI > 70
-    # NEUTRAL: Otherwise
+    # 4. Signal Logic
     conditions = [
         (df['RSI'] < 30) & (df['Close'] > df['EMA20']),
         (df['RSI'] > 70)
@@ -78,27 +95,23 @@ def calculate_indicators(df):
     return df
 
 # -----------------------------------------------------------------------------
-# DATA RETRIEVAL
+# EXECUTION & DISPLAY
 # -----------------------------------------------------------------------------
-with st.spinner(f"Fetching data for {ticker_symbol}..."):
+with st.spinner(f"Fetching market data for {ticker_symbol}..."):
     try:
-        data = yf.download(ticker_symbol, period="6m", interval="1d", progress=False)
+        raw_data = fetch_stock_data(ticker_symbol)
 
-        # Clean MultiIndex columns if returned by yfinance
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
-
-        if data.empty:
-            st.error(f"No data returned for ticker '{ticker_symbol}'. Please verify the symbol.")
+        if raw_data.empty:
+            st.error(f"Unable to retrieve data for '{ticker_symbol}'. Yahoo Finance may be rate-limiting or the ticker format is invalid.")
             st.stop()
 
-        df = calculate_indicators(data.copy())
+        df = calculate_indicators(raw_data.copy())
 
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
+        st.error(f"Error processing market data: {e}")
         st.stop()
 
-# Get recent metrics
+# Recent metrics
 latest_row = df.iloc[-1]
 latest_price = float(latest_row['Close'])
 latest_rsi = float(latest_row['RSI'])
@@ -106,7 +119,7 @@ latest_signal = str(latest_row['Signal'])
 latest_ema = float(latest_row['EMA20'])
 
 # -----------------------------------------------------------------------------
-# SIGNAL BOX & SUMMARY METRICS
+# SUMMARY METRICS
 # -----------------------------------------------------------------------------
 col1, col2, col3, col4 = st.columns(4)
 
@@ -121,22 +134,21 @@ with col3:
 
 with col4:
     if latest_signal == "BUY":
-        st.markdown("<h3 style='color: green; text-align: center; margin-top: 10px;'>🟢 BUY</h3>", unsafe_allow_html=True)
+        st.markdown("<h3 style='color: green; text-align: center;'>🟢 BUY</h3>", unsafe_allow_html=True)
     elif latest_signal == "SELL":
-        st.markdown("<h3 style='color: red; text-align: center; margin-top: 10px;'>🔴 SELL</h3>", unsafe_allow_html=True)
+        st.markdown("<h3 style='color: red; text-align: center;'>🔴 SELL</h3>", unsafe_allow_html=True)
     else:
-        st.markdown("<h3 style='color: gray; text-align: center; margin-top: 10px;'>⚪ NEUTRAL</h3>", unsafe_allow_html=True)
+        st.markdown("<h3 style='color: gray; text-align: center;'>⚪ NEUTRAL</h3>", unsafe_allow_html=True)
 
 st.markdown("---")
 
 # -----------------------------------------------------------------------------
-# INTERACTIVE CHART (PLOTLY)
+# CHARTING
 # -----------------------------------------------------------------------------
-st.subheader(f"Price Action & Indicators: {ticker_symbol}")
+st.subheader(f"Price Action & Technical Indicators: {ticker_symbol}")
 
 fig = go.Figure()
 
-# Candlestick
 fig.add_trace(go.Candlestick(
     x=df.index,
     open=df['Open'],
@@ -146,7 +158,6 @@ fig.add_trace(go.Candlestick(
     name='Price'
 ))
 
-# 20 EMA
 fig.add_trace(go.Scatter(
     x=df.index,
     y=df['EMA20'],
@@ -155,7 +166,6 @@ fig.add_trace(go.Scatter(
     line=dict(color='orange', width=1.5)
 ))
 
-# VWAP
 fig.add_trace(go.Scatter(
     x=df.index,
     y=df['VWAP'],
@@ -175,14 +185,13 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# RECENT TRADING SIGNALS TABLE
+# RECENT SIGNALS TABLE
 # -----------------------------------------------------------------------------
 st.subheader("10 Most Recent Trading Signals")
 
 recent_signals_df = df[['Close', 'EMA20', 'VWAP', 'RSI', 'Signal']].tail(10).sort_index(ascending=False)
 recent_signals_df.index = recent_signals_df.index.strftime('%Y-%m-%d')
 
-# Highlight signals for better visibility
 def highlight_signal(val):
     if val == 'BUY':
         return 'background-color: rgba(0, 255, 0, 0.2); color: green; font-weight: bold;'
