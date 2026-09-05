@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from curl_cffi import requests as curl_requests
 
 # -----------------------------------------------------------------------------
 # PAGE CONFIGURATION
@@ -42,26 +43,23 @@ else:
     ticker_symbol = ticker_options[selected_label]
 
 st.sidebar.markdown("---")
-st.sidebar.info("Data fetched dynamically via Yahoo Finance (`yfinance`). Ensure Yahoo ticker suffixes are included (`.NS` for NSE).")
+st.sidebar.info("Data fetched dynamically using browser impersonation to bypass cloud rate limits.")
 
 # -----------------------------------------------------------------------------
-# ROBUST DATA FETCHING FUNCTION
+# DATA FETCHING WITH BROWSER IMPERSONATION
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=300)
 def fetch_stock_data(ticker):
-    """Fetches data using yf.download with fallback to yf.Ticker().history()"""
-    # Attempt 1: yf.download
-    data = yf.download(ticker, period="6m", interval="1d", progress=False, auto_adjust=True)
+    """Uses curl_cffi to impersonate Chrome browser requests to Yahoo Finance."""
+    session = curl_requests.Session(impersonate="chrome")
     
-    # Flatten MultiIndex columns if present
+    # Instantiate ticker with custom browser session
+    t = yf.Ticker(ticker, session=session)
+    data = t.history(period="6m", interval="1d")
+    
     if isinstance(data.columns, pd.MultiIndex):
         data.columns = data.columns.get_level_values(0)
-
-    # Attempt 2: Fallback to Ticker.history if download returned empty
-    if data.empty:
-        t = yf.Ticker(ticker)
-        data = t.history(period="6m", interval="1d")
-
+        
     return data
 
 # -----------------------------------------------------------------------------
@@ -69,14 +67,11 @@ def fetch_stock_data(ticker):
 # -----------------------------------------------------------------------------
 def calculate_indicators(df):
     """Calculates 20 EMA, Approximate Daily VWAP, and 14-period RSI."""
-    # 1. Exponential Moving Average (20-period)
     df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
 
-    # 2. Approximate Daily VWAP
     typical_price = (df['High'] + df['Low'] + df['Close']) / 3
     df['VWAP'] = (typical_price * df['Volume']).cumsum() / df['Volume'].cumsum()
 
-    # 3. Relative Strength Index (RSI - 14 period)
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -84,7 +79,6 @@ def calculate_indicators(df):
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
 
-    # 4. Signal Logic
     conditions = [
         (df['RSI'] < 30) & (df['Close'] > df['EMA20']),
         (df['RSI'] > 70)
@@ -102,7 +96,7 @@ with st.spinner(f"Fetching market data for {ticker_symbol}..."):
         raw_data = fetch_stock_data(ticker_symbol)
 
         if raw_data.empty:
-            st.error(f"Unable to retrieve data for '{ticker_symbol}'. Yahoo Finance may be rate-limiting or the ticker format is invalid.")
+            st.error(f"Unable to retrieve data for '{ticker_symbol}'. Yahoo Finance may be temporarily unresponsive.")
             st.stop()
 
         df = calculate_indicators(raw_data.copy())
@@ -111,7 +105,6 @@ with st.spinner(f"Fetching market data for {ticker_symbol}..."):
         st.error(f"Error processing market data: {e}")
         st.stop()
 
-# Recent metrics
 latest_row = df.iloc[-1]
 latest_price = float(latest_row['Close'])
 latest_rsi = float(latest_row['RSI'])
